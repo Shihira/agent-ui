@@ -8,6 +8,7 @@ import { useStore } from '@/store'
 import { useLocale } from '@/i18n/LocaleProvider'
 import useChatActions from '@/hooks/useChatActions'
 import Icon from '@/components/ui/icon'
+import { cn } from '@/lib/utils'
 
 const TopbarEntityMenu = () => {
   const { t } = useLocale()
@@ -21,7 +22,6 @@ const TopbarEntityMenu = () => {
     setSelectedModel
   } = useStore()
   const [open, setOpen] = useState(false)
-  const [step, setStep] = useState<'root' | 'entities'>('root')
   const [pendingMode, setPendingMode] = useState<'agent' | 'team'>(mode)
 
   const [agentId, setAgentId] = useQueryState('agent', {
@@ -70,26 +70,16 @@ const TopbarEntityMenu = () => {
       ? t('sidebar.no_teams_available')
       : t('sidebar.no_agents_available')
 
-  const resetSelection = () => {
-    setAgentId(null)
-    setTeamId(null)
-    setSelectedModel('')
-    setMessages([])
-    setSessionId(null)
-  }
-
-  const handleModeSelect = (newMode: 'agent' | 'team') => {
-    if (newMode !== mode) {
-      setMode(newMode)
-      resetSelection()
-      clearChat()
-    }
-    setPendingMode(newMode)
-    setStep('entities')
-  }
+  const selectedId =
+    pendingMode === mode ? (mode === 'team' ? teamId : agentId) : null
 
   const handleEntitySelect = (entityId: string) => {
     const selectedEntity = entities.find((entity) => entity.id === entityId)
+
+    if (pendingMode !== mode) {
+      setMode(pendingMode)
+      clearChat()
+    }
 
     setSelectedModel(selectedEntity?.model?.provider || '')
 
@@ -109,7 +99,6 @@ const TopbarEntityMenu = () => {
     }
 
     setOpen(false)
-    setStep('root')
   }
 
   return (
@@ -117,7 +106,6 @@ const TopbarEntityMenu = () => {
       open={open}
       onOpenChange={(nextOpen) => {
         setOpen(nextOpen)
-        setStep('root')
         if (nextOpen) {
           setPendingMode(mode)
         }
@@ -136,62 +124,50 @@ const TopbarEntityMenu = () => {
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content
-          className="z-50 min-w-[220px] rounded-xl border border-border bg-background p-1 text-secondary shadow-lg"
+          className="z-50 w-[220px] rounded-xl border border-border bg-background p-1 text-secondary shadow-lg"
           sideOffset={6}
         >
-          {step === 'root' ? (
-            <>
-              <DropdownMenu.Item
-                onSelect={(event) => {
-                  event.preventDefault()
-                  handleModeSelect('agent')
-                }}
-                className="cursor-pointer rounded-lg px-3 py-2 text-xs font-medium uppercase text-primary outline-none hover:bg-surface-hover"
+          <div className="grid grid-cols-2 gap-1 rounded-lg bg-background-secondary p-1">
+            {(['agent', 'team'] as const).map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                onPointerDown={(event) => event.preventDefault()}
+                onClick={() => setPendingMode(tab)}
+                className={cn(
+                  'rounded-md px-2 py-1 text-xs font-medium uppercase',
+                  pendingMode === tab
+                    ? 'bg-background text-primary shadow-sm'
+                    : 'text-secondary hover:text-primary'
+                )}
               >
-                {t('sidebar.mode_agent')}
-              </DropdownMenu.Item>
-              <DropdownMenu.Item
-                onSelect={(event) => {
-                  event.preventDefault()
-                  handleModeSelect('team')
-                }}
-                className="cursor-pointer rounded-lg px-3 py-2 text-xs font-medium uppercase text-primary outline-none hover:bg-surface-hover"
-              >
-                {t('sidebar.mode_team')}
-              </DropdownMenu.Item>
-            </>
-          ) : (
-            <>
-              <DropdownMenu.Item
-                onSelect={(event) => {
-                  event.preventDefault()
-                  setStep('root')
-                }}
-                className="cursor-pointer rounded-lg px-3 py-2 text-xs font-medium uppercase text-secondary outline-none hover:bg-surface-hover"
-              >
-                {t('actions.back')}
-              </DropdownMenu.Item>
-              <div className="my-1 h-px bg-border" />
-              {entities.length === 0 ? (
+                {tab === 'agent'
+                  ? t('sidebar.mode_agent')
+                  : t('sidebar.mode_team')}
+              </button>
+            ))}
+          </div>
+          <div className="my-1 h-px bg-border" />
+          <div className="max-h-64 overflow-y-auto">
+            {entities.length === 0 ? (
+              <div className="px-3 py-2 text-xs font-medium text-muted">
+                {emptyPlaceholder}
+              </div>
+            ) : (
+              entities.map((entity) => (
                 <DropdownMenu.Item
-                  disabled
-                  className="cursor-not-allowed rounded-lg px-3 py-2 text-xs font-medium text-muted"
+                  key={entity.id}
+                  onSelect={() => handleEntitySelect(entity.id)}
+                  className={cn(
+                    'cursor-pointer rounded-lg px-3 py-2 text-xs font-medium text-primary outline-none hover:bg-surface-hover',
+                    entity.id === selectedId && 'bg-surface-hover'
+                  )}
                 >
-                  {emptyPlaceholder}
+                  {entity.name || entity.id}
                 </DropdownMenu.Item>
-              ) : (
-                entities.map((entity) => (
-                  <DropdownMenu.Item
-                    key={entity.id}
-                    onSelect={() => handleEntitySelect(entity.id)}
-                    className="cursor-pointer rounded-lg px-3 py-2 text-xs font-medium text-primary outline-none hover:bg-surface-hover"
-                  >
-                    {entity.name || entity.id}
-                  </DropdownMenu.Item>
-                ))
-              )}
-            </>
-          )}
+              ))
+            )}
+          </div>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>

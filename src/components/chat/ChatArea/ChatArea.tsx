@@ -7,7 +7,7 @@ import { useStore } from '@/store'
 import TopbarEntityMenu from './TopbarEntityMenu'
 
 const ChatTopBar = () => (
-  <div className="flex h-14 items-center justify-between px-6">
+  <div className="relative z-10 flex h-14 items-center justify-between px-6">
     <div className="flex items-center gap-2 text-sm font-medium text-primary">
       <TopbarEntityMenu />
     </div>
