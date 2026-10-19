@@ -10,6 +10,15 @@ export const APIRoutes = {
 
   DeleteSession: (agentOSUrl: string, sessionId: string) =>
     `${agentOSUrl}/sessions/${sessionId}`,
+  RenameSession: (agentOSUrl: string, sessionId: string) =>
+    `${agentOSUrl}/sessions/${sessionId}/rename`,
+  ForkAgentSession: (
+    agentOSUrl: string,
+    agentId: string,
+    sessionId: string
+  ) => `${agentOSUrl}/agents/${agentId}/sessions/${sessionId}/fork`,
+  ForkTeamSession: (agentOSUrl: string, teamId: string, sessionId: string) =>
+    `${agentOSUrl}/teams/${teamId}/sessions/${sessionId}/fork`,
 
   GetTeams: (agentOSUrl: string) => `${agentOSUrl}/teams`,
   TeamRun: (agentOSUrl: string, teamId: string) =>

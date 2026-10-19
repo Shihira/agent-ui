@@ -4,6 +4,7 @@ import { APIRoutes } from './routes'
 
 import { AgentDetails, Sessions, TeamDetails } from '@/types/os'
 import { tRuntime } from '@/i18n/runtime'
+import { constructEndpointUrl } from '@/lib/constructEndpointUrl'
 
 // Helper function to create headers with optional auth token
 const createHeaders = (authToken?: string): HeadersInit => {
@@ -123,6 +124,71 @@ export const deleteSessionAPI = async (
     }
   )
   return response
+}
+
+export const forkSessionAPI = async (
+  base: string,
+  type: 'agent' | 'team',
+  componentId: string,
+  sessionId: string,
+  authToken?: string
+): Promise<{ session_id: string; forked_from_session_id: string }> => {
+  const url =
+    type === 'team'
+      ? APIRoutes.ForkTeamSession(base, componentId, sessionId)
+      : APIRoutes.ForkAgentSession(base, componentId, sessionId)
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: createHeaders(authToken)
+  })
+
+  if (!response.ok) {
+    let detail = response.statusText
+    try {
+      const body = await response.json()
+      if (typeof body?.detail === 'string') detail = body.detail
+    } catch {
+      // Keep statusText.
+    }
+    throw new Error(detail || `Failed to fork session (${response.status})`)
+  }
+
+  return response.json()
+}
+
+export const renameSessionAPI = async (
+  base: string,
+  type: 'agent' | 'team',
+  sessionId: string,
+  sessionName: string,
+  dbId?: string,
+  authToken?: string
+) => {
+  const url = new URL(
+    APIRoutes.RenameSession(constructEndpointUrl(base), sessionId)
+  )
+  url.searchParams.set('type', type)
+  if (dbId) url.searchParams.set('db_id', dbId)
+
+  const response = await fetch(url.toString(), {
+    method: 'POST',
+    headers: createHeaders(authToken),
+    body: JSON.stringify({ session_name: sessionName })
+  })
+
+  if (!response.ok) {
+    let detail = response.statusText
+    try {
+      const body = await response.json()
+      if (typeof body?.detail === 'string') detail = body.detail
+    } catch {
+      // Keep statusText.
+    }
+    throw new Error(detail || `Failed to rename session (${response.status})`)
+  }
+
+  return response.json()
 }
 
 export const getTeamsAPI = async (
