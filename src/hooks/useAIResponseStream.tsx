@@ -1,4 +1,4 @@
-import { RunResponseContent } from '@/types/os'
+import { RunEvent, RunResponseContent } from '@/types/os'
 import { useCallback } from 'react'
 
 /**
@@ -63,16 +63,7 @@ function convertNewFormatToLegacy(
     ...cleanData
   } as LegacyEventFormat
 }
-/**
- * Parses a string buffer to extract complete JSON objects.
- *
- * This function discards any extraneous data before the first '{', then
- * repeatedly finds and processes complete JSON objects.
- *
- * @param text - The accumulated string buffer.
- * @param onChunk - Callback to process each parsed JSON object.
- * @returns Remaining string that did not form a complete JSON object.
- */
+
 /**
  * Extracts complete JSON objects from a buffer string **incrementally**.
  * - It allows partial JSON objects to accumulate across chunks.
@@ -158,22 +149,46 @@ function parseBuffer(
   return buffer
 }
 
+const CONTROL_EVENTS = new Set(['replay', 'catch_up'])
+
+const TERMINAL_EVENTS = new Set<string>([
+  RunEvent.RunCompleted,
+  RunEvent.RunError,
+  RunEvent.RunCancelled,
+  RunEvent.TeamRunCompleted,
+  RunEvent.TeamRunError,
+  RunEvent.TeamRunCancelled
+])
+
+export type StreamResumeState = {
+  runId?: string
+  sessionId?: string
+  lastEventIndex?: number
+  attempt: number
+}
+
+export type StreamResumeRequest = {
+  apiUrl: string
+  requestBody: FormData | Record<string, unknown>
+}
+
+const MAX_RESUME_ATTEMPTS = 5
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof DOMException && error.name === 'AbortError') ||
+    (error instanceof Error && error.name === 'AbortError')
+  )
+}
+
 /**
  * Custom React hook to handle streaming API responses as JSON objects.
  *
- * This hook supports two streaming formats:
- * 1. Legacy format: Direct JSON objects matching RunResponseContent interface
- * 2. New format: Event/data structure with { event: string, data: string|object }
- *
- * The hook:
- * - Accumulates partial JSON data from streaming responses.
- * - Extracts complete JSON objects and processes them via onChunk.
- * - Automatically detects new format and converts it to legacy format for compatibility.
- * - Parses stringified data field if it's a string (supports both JSON and Python dict syntax).
- * - Removes redundant event field from data object during conversion.
- * - Handles errors via onError and signals completion with onComplete.
- *
- * @returns An object containing the streamResponse function.
+ * Supports Agno background runs: when `onDisconnected` is provided and the
+ * stream ends before a terminal run event, the hook reconnects via the resume
+ * URL built by that callback (passing last_event_index).
  */
 export default function useAIResponseStream() {
   const streamResponse = useCallback(
@@ -181,73 +196,203 @@ export default function useAIResponseStream() {
       apiUrl: string
       headers?: Record<string, string>
       requestBody: FormData | Record<string, unknown>
+      signal?: AbortSignal
       onChunk: (chunk: RunResponseContent) => void
       onError: (error: Error) => void
       onComplete: () => void
+      onCancelled?: () => void
+      /**
+       * Called when the SSE connection drops before the run finishes.
+       * Return the next `/resume` request, or null to stop retrying.
+       */
+      onDisconnected?: (state: StreamResumeState) => StreamResumeRequest | null
     }): Promise<void> => {
       const {
         apiUrl,
         headers = {},
         requestBody,
+        signal,
         onChunk,
         onError,
-        onComplete
+        onComplete,
+        onCancelled,
+        onDisconnected
       } = options
 
-      // Buffer to accumulate partial JSON data.
-      let buffer = ''
+      let runId: string | undefined
+      let sessionId: string | undefined
+      let lastEventIndex: number | undefined
+      let reachedTerminal = false
+      let attempt = 0
+      let cancelled = false
 
-      try {
-        const response = await fetch(apiUrl, {
-          method: 'POST',
-          headers: {
-            // Set content-type only for non-FormData requests.
-            ...(!(requestBody instanceof FormData) && {
-              'Content-Type': 'application/json'
-            }),
-            ...headers
-          },
-          body:
-            requestBody instanceof FormData
-              ? requestBody
-              : JSON.stringify(requestBody)
-        })
-
-        if (!response.ok) {
-          const errorData = await response.json()
-          throw errorData
+      const handleChunk = (chunk: RunResponseContent) => {
+        if (typeof chunk.run_id === 'string' && chunk.run_id) {
+          runId = chunk.run_id
         }
-        if (!response.body) {
-          throw new Error('No response body')
+        if (typeof chunk.session_id === 'string' && chunk.session_id) {
+          sessionId = chunk.session_id
         }
 
-        const reader = response.body.getReader()
-        const decoder = new TextDecoder()
-
-        // Recursively process the stream.
-        const processStream = async (): Promise<void> => {
-          const { done, value } = await reader.read()
-          if (done) {
-            // Process any final data in the buffer.
-            buffer = parseBuffer(buffer, onChunk)
-            onComplete()
+        if (typeof chunk.event_index === 'number') {
+          if (
+            lastEventIndex !== undefined &&
+            chunk.event_index <= lastEventIndex
+          ) {
             return
           }
-          // Decode, sanitize, and accumulate the chunk
-          buffer += decoder.decode(value, { stream: true })
-
-          // Parse any complete JSON objects available in the buffer.
-          buffer = parseBuffer(buffer, onChunk)
-          await processStream()
+          lastEventIndex = chunk.event_index
         }
-        await processStream()
-      } catch (error) {
-        if (typeof error === 'object' && error !== null && 'detail' in error) {
-          onError(new Error(String(error.detail)))
-        } else {
-          onError(new Error(String(error)))
+
+        const eventName = String(chunk.event ?? '')
+        if (CONTROL_EVENTS.has(eventName)) {
+          return
+        }
+
+        if (eventName === 'error' && chunk.error) {
+          onError(new Error(String(chunk.error)))
+          reachedTerminal = true
+          return
+        }
+
+        if (TERMINAL_EVENTS.has(eventName)) {
+          reachedTerminal = true
+        }
+
+        onChunk(chunk)
+      }
+
+      const openStream = async (
+        url: string,
+        body: FormData | Record<string, unknown>
+      ): Promise<{ ok: true } | { ok: false; error: Error }> => {
+        let buffer = ''
+        try {
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+              ...(!(body instanceof FormData) && {
+                'Content-Type': 'application/json'
+              }),
+              ...headers
+            },
+            body: body instanceof FormData ? body : JSON.stringify(body),
+            signal
+          })
+
+          if (!response.ok) {
+            const errorData = await response.json().catch(() => null)
+            if (
+              typeof errorData === 'object' &&
+              errorData !== null &&
+              'detail' in errorData
+            ) {
+              throw new Error(String(errorData.detail))
+            }
+            throw new Error(`Request failed with status ${response.status}`)
+          }
+          if (!response.body) {
+            throw new Error('No response body')
+          }
+
+          const reader = response.body.getReader()
+          const decoder = new TextDecoder()
+
+          for (;;) {
+            const { done, value } = await reader.read()
+            if (done) {
+              buffer = parseBuffer(buffer, handleChunk)
+              return { ok: true }
+            }
+            buffer += decoder.decode(value, { stream: true })
+            buffer = parseBuffer(buffer, handleChunk)
+            if (reachedTerminal) {
+              try {
+                await reader.cancel()
+              } catch {
+                // Stream already closed.
+              }
+              return { ok: true }
+            }
+          }
+        } catch (error) {
+          if (isAbortError(error)) {
+            cancelled = true
+            return { ok: false, error: new Error('Aborted') }
+          }
+          if (typeof error === 'object' && error !== null && 'detail' in error) {
+            return {
+              ok: false,
+              error: new Error(String((error as { detail: unknown }).detail))
+            }
+          }
+          return {
+            ok: false,
+            error: error instanceof Error ? error : new Error(String(error))
+          }
         }
       }
+
+      let nextUrl = apiUrl
+      let nextBody = requestBody
+      let result = await openStream(nextUrl, nextBody)
+      let lastError: Error | null = result.ok ? null : result.error
+
+      if (cancelled) {
+        onCancelled?.()
+        return
+      }
+
+      while (
+        !reachedTerminal &&
+        !cancelled &&
+        onDisconnected &&
+        attempt < MAX_RESUME_ATTEMPTS
+      ) {
+        // Clean EOF without a terminal event also means "reconnect to catch up".
+        attempt += 1
+        const resume = onDisconnected({
+          runId,
+          sessionId,
+          lastEventIndex,
+          attempt
+        })
+        if (!resume) {
+          break
+        }
+        await sleep(Math.min(250 * attempt, 1500))
+        if (signal?.aborted) {
+          cancelled = true
+          break
+        }
+        nextUrl = resume.apiUrl
+        nextBody = resume.requestBody
+        result = await openStream(nextUrl, nextBody)
+        if (cancelled) {
+          onCancelled?.()
+          return
+        }
+        lastError = result.ok ? null : result.error
+        if (result.ok && reachedTerminal) {
+          break
+        }
+        if (result.ok && !reachedTerminal) {
+          // Stream ended cleanly again; try another resume until attempts run out.
+          continue
+        }
+      }
+
+      if (cancelled) {
+        onCancelled?.()
+        return
+      }
+
+      if (!reachedTerminal && lastError) {
+        onError(lastError)
+        return
+      }
+
+      onComplete()
     },
     []
   )

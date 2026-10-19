@@ -1,7 +1,7 @@
 'use client'
 
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react'
-import { messages } from '@/i18n/messages'
+import { messageFor, messages } from '@/i18n/messages'
 
 export type Locale = 'zh' | 'en'
 
@@ -23,7 +23,7 @@ export const LocaleProvider = ({
 }: {
   children: React.ReactNode
 }) => {
-  const [locale, setLocaleState] = useState<Locale>('zh')
+  const [locale, setLocaleState] = useState<Locale>('en')
 
   useEffect(() => {
     try {
@@ -48,8 +48,7 @@ export const LocaleProvider = ({
 
   const value = useMemo<LocaleContextValue>(() => {
     const t = (key: string) => {
-      const current = messages[locale]
-      const result = current?.[key]
+      const result = messageFor(locale, key)
       if (!result && process.env.NODE_ENV !== 'production') {
         // eslint-disable-next-line no-console
         console.warn(`[i18n] Missing key: ${key}`)

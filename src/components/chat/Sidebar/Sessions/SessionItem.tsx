@@ -1,7 +1,6 @@
 import { useQueryState } from 'nuqs'
 import { SessionEntry } from '@/types/os'
 import { Button } from '../../../ui/button'
-import useSessionLoader from '@/hooks/useSessionLoader'
 import { deleteSessionAPI } from '@/api/os'
 import { useStore } from '@/store'
 import { toast } from 'sonner'
@@ -30,8 +29,7 @@ const SessionItem = ({
   const [dbId] = useQueryState('db_id')
   const [, setSessionId] = useQueryState('session')
   const authToken = useStore((state) => state.authToken)
-  const { getSession } = useSessionLoader()
-  const { selectedEndpoint, sessionsData, setSessionsData, mode } = useStore()
+  const { selectedEndpoint, sessionsData, setSessionsData } = useStore()
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const { clearChat } = useChatActions()
@@ -40,15 +38,7 @@ const SessionItem = ({
     if (!(agentId || teamId || dbId)) return
 
     onSessionClick()
-    await getSession(
-      {
-        entityType: mode,
-        agentId,
-        teamId,
-        dbId: dbId ?? ''
-      },
-      session_id
-    )
+    // Sessions.tsx loads history (and auto-resumes running runs) when sessionId changes.
     setSessionId(session_id)
   }
 

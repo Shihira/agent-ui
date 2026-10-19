@@ -135,7 +135,7 @@ export interface RunResponseContent {
   content?: string | object
   content_type: string
   context?: MessageContext[]
-  event: RunEvent
+  event: RunEvent | string
   event_data?: object
   messages?: ModelMessage[]
   metrics?: object
@@ -143,6 +143,9 @@ export interface RunResponseContent {
   run_id?: string
   agent_id?: string
   session_id?: string
+  /** Monotonic index for background-run stream reconnection. */
+  event_index?: number
+  error?: string
   tool?: ToolCall
   tools?: Array<ToolCall>
   created_at: number
@@ -157,7 +160,7 @@ export interface RunResponse {
   content?: string | object
   content_type: string
   context?: MessageContext[]
-  event: RunEvent
+  event: RunEvent | string
   event_data?: object
   messages?: ModelMessage[]
   metrics?: object
@@ -165,6 +168,9 @@ export interface RunResponse {
   run_id?: string
   agent_id?: string
   session_id?: string
+  /** Monotonic index for background-run stream reconnection. */
+  event_index?: number
+  error?: string
   tool?: ToolCall
   tools?: Array<ToolCall>
   created_at: number
@@ -319,4 +325,10 @@ export interface ChatEntry {
     }
     created_at: number
   }
+}
+
+/** In-progress background run discovered while loading a session. */
+export interface ActiveBackgroundRun {
+  run_id: string
+  last_event_index?: number
 }

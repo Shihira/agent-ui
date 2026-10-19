@@ -1,10 +1,14 @@
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 
 import { APIRoutes } from '@/api/routes'
 
 import useChatActions from '@/hooks/useChatActions'
 import { useStore } from '../store'
-import { RunEvent, RunResponseContent, type RunResponse } from '@/types/os'
+import {
+  RunEvent,
+  RunResponseContent,
+  type RunResponse
+} from '@/types/os'
 import { constructEndpointUrl } from '@/lib/constructEndpointUrl'
 import useAIResponseStream from './useAIResponseStream'
 import { ToolCall } from '@/types/os'
@@ -25,6 +29,11 @@ const useAIChatStreamHandler = () => {
   const setIsStreaming = useStore((state) => state.setIsStreaming)
   const setSessionsData = useStore((state) => state.setSessionsData)
   const { streamResponse } = useAIResponseStream()
+  const abortControllerRef = useRef<AbortController | null>(null)
+
+  const stopStreaming = useCallback(() => {
+    abortControllerRef.current?.abort()
+  }, [])
 
   const scheduleWorkingStatus = useCallback(
     (expectedToken?: number) => {
@@ -128,6 +137,9 @@ const useAIChatStreamHandler = () => {
 
   const handleStreamResponse = useCallback(
     async (input: string | FormData) => {
+      abortControllerRef.current?.abort()
+      const controller = new AbortController()
+      abortControllerRef.current = controller
       setIsStreaming(true)
 
       const formData = input instanceof FormData ? input : new FormData()
@@ -195,6 +207,8 @@ const useAIChatStreamHandler = () => {
         }
 
         formData.append('stream', 'true')
+        // Detached run: survives client disconnect; reconnect via /resume.
+        formData.append('background', 'true')
         formData.append('session_id', sessionId ?? '')
 
         // Create headers with auth token if available
@@ -203,10 +217,43 @@ const useAIChatStreamHandler = () => {
           headers['Authorization'] = `Bearer ${authToken}`
         }
 
+        const buildResumeRequest = ({
+          runId,
+          sessionId: activeSessionId,
+          lastEventIndex,
+          attempt
+        }: {
+          runId?: string
+          sessionId?: string
+          lastEventIndex?: number
+          attempt: number
+        }) => {
+          if (!runId || attempt > 5) return null
+          let resumeUrl: string | null = null
+          if (mode === 'team' && teamId) {
+            resumeUrl = APIRoutes.TeamRunResume(endpointUrl, teamId, runId)
+          } else if (mode === 'agent' && agentId) {
+            resumeUrl = APIRoutes.AgentRunResume(endpointUrl, agentId, runId)
+          }
+          if (!resumeUrl) return null
+          const resumeBody = new FormData()
+          if (lastEventIndex !== undefined) {
+            resumeBody.append('last_event_index', String(lastEventIndex))
+          }
+          resumeBody.append(
+            'session_id',
+            activeSessionId ?? newSessionId ?? sessionId ?? ''
+          )
+          return { apiUrl: resumeUrl, requestBody: resumeBody }
+        }
+
         await streamResponse({
           apiUrl: RunUrl,
           headers,
           requestBody: formData,
+          signal: controller.signal,
+          onDisconnected: buildResumeRequest,
+          onCancelled: () => {},
           onChunk: (chunk: RunResponse) => {
             if (
               chunk.event === RunEvent.RunStarted ||
@@ -500,6 +547,9 @@ const useAIChatStreamHandler = () => {
           )
         }
       } finally {
+        if (abortControllerRef.current === controller) {
+          abortControllerRef.current = null
+        }
         focusChatInput()
         setIsStreaming(false)
       }
@@ -520,11 +570,321 @@ const useAIChatStreamHandler = () => {
       setSessionsData,
       sessionId,
       setSessionId,
-      processChunkToolCalls
+      processChunkToolCalls,
+      scheduleWorkingStatus
     ]
   )
 
-  return { handleStreamResponse }
+  /**
+   * Reattach to a background run when opening an existing session whose
+   * latest run is still PENDING/RUNNING.
+   */
+  const attachToBackgroundRun = useCallback(
+    async ({
+      runId,
+      sessionId: activeSessionId,
+      lastEventIndex
+    }: {
+      runId: string
+      sessionId: string
+      lastEventIndex?: number
+    }) => {
+      if (!runId || !(agentId || teamId)) return
+
+      abortControllerRef.current?.abort()
+      const controller = new AbortController()
+      abortControllerRef.current = controller
+      setIsStreaming(true)
+      setStreamingErrorMessage('')
+
+      const endpointUrl = constructEndpointUrl(selectedEndpoint)
+      let resumeUrl: string | null = null
+      if (mode === 'team' && teamId) {
+        resumeUrl = APIRoutes.TeamRunResume(endpointUrl, teamId, runId)
+      } else if (mode === 'agent' && agentId) {
+        resumeUrl = APIRoutes.AgentRunResume(endpointUrl, agentId, runId)
+      }
+      if (!resumeUrl) {
+        setIsStreaming(false)
+        return
+      }
+
+      const messages = useStore.getState().messages
+      const lastAgent = [...messages]
+        .reverse()
+        .find((message) => message.role === 'agent')
+      let lastContent =
+        typeof lastAgent?.content === 'string' ? lastAgent.content : ''
+
+      setMessages((prevMessages) => {
+        const newMessages = [...prevMessages]
+        const lastMessage = newMessages[newMessages.length - 1]
+        if (lastMessage && lastMessage.role === 'agent') {
+          lastMessage.streamingError = false
+          lastMessage.extra_data = {
+            ...lastMessage.extra_data,
+            streaming_status: { status: 'working', changed_at: Date.now() }
+          }
+          return newMessages
+        }
+        newMessages.push({
+          role: 'agent',
+          content: '',
+          tool_calls: [],
+          streamingError: false,
+          created_at: Math.floor(Date.now() / 1000),
+          extra_data: {
+            streaming_status: { status: 'working', changed_at: Date.now() }
+          }
+        })
+        return newMessages
+      })
+
+      const headers: Record<string, string> = {}
+      if (authToken) {
+        headers['Authorization'] = `Bearer ${authToken}`
+      }
+
+      const buildResumeRequest = ({
+        runId: activeRunId,
+        sessionId: resumeSessionId,
+        lastEventIndex: resumeIndex,
+        attempt
+      }: {
+        runId?: string
+        sessionId?: string
+        lastEventIndex?: number
+        attempt: number
+      }) => {
+        const id = activeRunId ?? runId
+        if (!id || attempt > 5) return null
+        let nextUrl: string | null = null
+        if (mode === 'team' && teamId) {
+          nextUrl = APIRoutes.TeamRunResume(endpointUrl, teamId, id)
+        } else if (mode === 'agent' && agentId) {
+          nextUrl = APIRoutes.AgentRunResume(endpointUrl, agentId, id)
+        }
+        if (!nextUrl) return null
+        const resumeBody = new FormData()
+        if (resumeIndex !== undefined) {
+          resumeBody.append('last_event_index', String(resumeIndex))
+        }
+        resumeBody.append(
+          'session_id',
+          resumeSessionId ?? activeSessionId ?? sessionId ?? ''
+        )
+        return { apiUrl: nextUrl, requestBody: resumeBody }
+      }
+
+      const initialBody = new FormData()
+      if (lastEventIndex !== undefined) {
+        initialBody.append('last_event_index', String(lastEventIndex))
+      }
+      initialBody.append('session_id', activeSessionId)
+
+      try {
+        await streamResponse({
+          apiUrl: resumeUrl,
+          headers,
+          requestBody: initialBody,
+          signal: controller.signal,
+          onDisconnected: buildResumeRequest,
+          onCancelled: () => {},
+          onChunk: (chunk: RunResponse) => {
+            if (
+              chunk.event === RunEvent.RunStarted ||
+              chunk.event === RunEvent.TeamRunStarted ||
+              chunk.event === RunEvent.ReasoningStarted ||
+              chunk.event === RunEvent.TeamReasoningStarted
+            ) {
+              setMessages((prevMessages) => {
+                const newMessages = [...prevMessages]
+                const lastMessage = newMessages[newMessages.length - 1]
+                if (lastMessage && lastMessage.role === 'agent') {
+                  lastMessage.extra_data = {
+                    ...lastMessage.extra_data,
+                    run_started_at:
+                      chunk.created_at ?? Math.floor(Date.now() / 1000),
+                    streaming_status: {
+                      status: 'working',
+                      changed_at: Date.now()
+                    }
+                  }
+                }
+                return newMessages
+              })
+            } else if (
+              chunk.event === RunEvent.ToolCallStarted ||
+              chunk.event === RunEvent.TeamToolCallStarted ||
+              chunk.event === RunEvent.ToolCallCompleted ||
+              chunk.event === RunEvent.TeamToolCallCompleted
+            ) {
+              let statusToken: number | undefined
+              setMessages((prevMessages) => {
+                const newMessages = [...prevMessages]
+                const lastMessage = newMessages[newMessages.length - 1]
+                if (lastMessage && lastMessage.role === 'agent') {
+                  const toolName =
+                    chunk.tool?.tool_name ?? chunk.tools?.[0]?.tool_name
+                  const isToolStart =
+                    chunk.event === RunEvent.ToolCallStarted ||
+                    chunk.event === RunEvent.TeamToolCallStarted
+                  lastMessage.tool_calls = processChunkToolCalls(
+                    chunk,
+                    lastMessage.tool_calls
+                  )
+                  if (isToolStart) {
+                    lastMessage.extra_data = {
+                      ...lastMessage.extra_data,
+                      streaming_status: {
+                        status: 'tool_started',
+                        tool_name: toolName,
+                        changed_at: Date.now()
+                      }
+                    }
+                  } else {
+                    statusToken =
+                      lastMessage.extra_data?.streaming_status?.changed_at
+                  }
+                }
+                return newMessages
+              })
+              if (
+                (chunk.event === RunEvent.ToolCallCompleted ||
+                  chunk.event === RunEvent.TeamToolCallCompleted) &&
+                statusToken !== undefined
+              ) {
+                scheduleWorkingStatus(statusToken)
+              }
+            } else if (
+              chunk.event === RunEvent.RunContent ||
+              chunk.event === RunEvent.TeamRunContent
+            ) {
+              setMessages((prevMessages) => {
+                const newMessages = [...prevMessages]
+                const lastMessage = newMessages[newMessages.length - 1]
+                if (
+                  lastMessage &&
+                  lastMessage.role === 'agent' &&
+                  typeof chunk.content === 'string'
+                ) {
+                  const uniqueContent = chunk.content.replace(lastContent, '')
+                  lastMessage.content += uniqueContent
+                  lastContent = chunk.content
+                  lastMessage.tool_calls = processChunkToolCalls(
+                    chunk,
+                    lastMessage.tool_calls
+                  )
+                  if (chunk.extra_data?.reasoning_steps) {
+                    lastMessage.extra_data = {
+                      ...lastMessage.extra_data,
+                      reasoning_steps: chunk.extra_data.reasoning_steps
+                    }
+                  }
+                  if (chunk.extra_data?.references) {
+                    lastMessage.extra_data = {
+                      ...lastMessage.extra_data,
+                      references: chunk.extra_data.references
+                    }
+                  }
+                  lastMessage.created_at =
+                    chunk.created_at ?? lastMessage.created_at
+                  if (chunk.images) lastMessage.images = chunk.images
+                  if (chunk.videos) lastMessage.videos = chunk.videos
+                  if (chunk.audio) lastMessage.audio = chunk.audio
+                }
+                return newMessages
+              })
+            } else if (
+              chunk.event === RunEvent.RunError ||
+              chunk.event === RunEvent.TeamRunError ||
+              chunk.event === RunEvent.TeamRunCancelled ||
+              chunk.event === RunEvent.RunCancelled
+            ) {
+              updateMessagesWithErrorState()
+              setStreamingErrorMessage(
+                (chunk.content as string) || 'Error during run'
+              )
+            } else if (
+              chunk.event === RunEvent.RunCompleted ||
+              chunk.event === RunEvent.TeamRunCompleted
+            ) {
+              setMessages((prevMessages) =>
+                prevMessages.map((message, index) => {
+                  if (
+                    index === prevMessages.length - 1 &&
+                    message.role === 'agent'
+                  ) {
+                    const updatedContent =
+                      typeof chunk.content === 'string'
+                        ? chunk.content
+                        : message.content
+                    return {
+                      ...message,
+                      content: updatedContent,
+                      tool_calls: processChunkToolCalls(
+                        chunk,
+                        message.tool_calls
+                      ),
+                      images: chunk.images ?? message.images,
+                      videos: chunk.videos ?? message.videos,
+                      response_audio: chunk.response_audio,
+                      created_at: chunk.created_at ?? message.created_at,
+                      extra_data: {
+                        ...message.extra_data,
+                        reasoning_steps:
+                          chunk.extra_data?.reasoning_steps ??
+                          message.extra_data?.reasoning_steps,
+                        references:
+                          chunk.extra_data?.references ??
+                          message.extra_data?.references,
+                        run_completed_at:
+                          chunk.created_at ?? Math.floor(Date.now() / 1000),
+                        streaming_status: undefined
+                      }
+                    }
+                  }
+                  return message
+                })
+              )
+            }
+          },
+          onError: (error) => {
+            updateMessagesWithErrorState()
+            setStreamingErrorMessage(error.message)
+          },
+          onComplete: () => {}
+        })
+      } catch (error) {
+        updateMessagesWithErrorState()
+        setStreamingErrorMessage(
+          error instanceof Error ? error.message : String(error)
+        )
+      } finally {
+        if (abortControllerRef.current === controller) {
+          abortControllerRef.current = null
+        }
+        setIsStreaming(false)
+      }
+    },
+    [
+      agentId,
+      teamId,
+      mode,
+      selectedEndpoint,
+      authToken,
+      sessionId,
+      streamResponse,
+      setIsStreaming,
+      setStreamingErrorMessage,
+      setMessages,
+      processChunkToolCalls,
+      scheduleWorkingStatus,
+      updateMessagesWithErrorState
+    ]
+  )
+
+  return { handleStreamResponse, attachToBackgroundRun, stopStreaming }
 }
 
 export default useAIChatStreamHandler

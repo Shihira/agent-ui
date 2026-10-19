@@ -29,7 +29,7 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="zh">
+    <html lang="en">
       <body className={`${geistSans.variable} ${dmMono.variable} antialiased`}>
         <ThemeProvider>
           <NuqsAdapter>

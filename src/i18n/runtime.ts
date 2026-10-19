@@ -1,4 +1,4 @@
-import { messages } from '@/i18n/messages'
+import { messageFor } from '@/i18n/messages'
 import type { Locale } from '@/i18n/LocaleProvider'
 
 const STORAGE_KEY = 'agent-ui-locale'
@@ -21,12 +21,12 @@ export const getRuntimeLocale = (): Locale => {
     // Ignore and fall back.
   }
 
-  return 'zh'
+  return 'en'
 }
 
 export const tRuntime = (key: string): string => {
   const locale = getRuntimeLocale()
-  const result = messages[locale]?.[key]
+  const result = messageFor(locale, key)
   if (!result && process.env.NODE_ENV !== 'production') {
     // eslint-disable-next-line no-console
     console.warn(`[i18n] Missing key: ${key}`)

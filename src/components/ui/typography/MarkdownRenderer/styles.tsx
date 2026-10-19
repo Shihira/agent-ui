@@ -201,7 +201,7 @@ const Img = ({ src, alt }: ImgProps) => {
   const { t } = useLocale()
   const [error, setError] = useState(false)
 
-  if (!src) return null
+  if (typeof src !== 'string' || !src) return null
 
   return (
     <div className="w-full max-w-xl">

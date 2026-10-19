@@ -34,8 +34,6 @@ export const messages = {
     'language.zh': '中文',
     'language.en': 'English',
     'chat.brand': 'ChatGPT',
-    'chat.login': '登录',
-    'chat.signup': '注册',
     'chat.blank_title': '有什么可以帮忙的？',
     'chat.blank_subtitle': '提问或描述你想完成的事情。',
     'chat.input_placeholder': '随便问点什么',
@@ -128,8 +126,6 @@ export const messages = {
     'language.zh': 'Chinese',
     'language.en': 'English',
     'chat.brand': 'ChatGPT',
-    'chat.login': 'Log in',
-    'chat.signup': 'Sign up',
     'chat.blank_title': 'What can I help with?',
     'chat.blank_subtitle': 'Ask a question or describe what you want to accomplish.',
     'chat.input_placeholder': 'Ask anything',
@@ -190,3 +186,9 @@ export const messages = {
     'time.seconds_short': 's'
   }
 } as const
+
+export const messageFor = (
+  locale: keyof typeof messages,
+  key: string
+): string | undefined =>
+  (messages[locale] as Readonly<Record<string, string>>)[key]

@@ -5,6 +5,7 @@ import { useQueryState } from 'nuqs'
 
 import { useStore } from '@/store'
 import useSessionLoader from '@/hooks/useSessionLoader'
+import useAIChatStreamHandler from '@/hooks/useAIStreamHandler'
 
 import SessionItem from './SessionItem'
 import SessionBlankState from './SessionBlankState'
@@ -59,6 +60,7 @@ const Sessions = () => {
   )
 
   const { getSessions, getSession } = useSessionLoader()
+  const { attachToBackgroundRun, stopStreaming } = useAIChatStreamHandler()
   const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout>>(null)
 
   const handleScroll = () => {
@@ -83,9 +85,30 @@ const Sessions = () => {
   }, [])
 
   useEffect(() => {
-    if (hydrated && sessionId && selectedEndpoint && (agentId || teamId)) {
-      const entityType = agentId ? 'agent' : 'team'
-      getSession({ entityType, agentId, teamId, dbId }, sessionId)
+    if (!hydrated || !sessionId || !selectedEndpoint || !(agentId || teamId)) {
+      return
+    }
+
+    let cancelled = false
+    const entityType = agentId ? 'agent' : 'team'
+
+    ;(async () => {
+      stopStreaming()
+      const result = await getSession(
+        { entityType, agentId, teamId, dbId },
+        sessionId
+      )
+      if (cancelled || !result?.activeRun) return
+      await attachToBackgroundRun({
+        runId: result.activeRun.run_id,
+        sessionId,
+        lastEventIndex: result.activeRun.last_event_index
+      })
+    })()
+
+    return () => {
+      cancelled = true
+      stopStreaming()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated, sessionId, selectedEndpoint, agentId, teamId, dbId])
