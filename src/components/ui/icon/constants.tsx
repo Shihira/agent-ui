@@ -37,7 +37,8 @@ import {
   ChevronUp,
   Trash,
   GitFork,
-  MoreHorizontal
+  MoreHorizontal,
+  Square
 } from 'lucide-react'
 
 import { PlusIcon } from '@radix-ui/react-icons'
@@ -79,5 +80,6 @@ export const ICONS: IconTypeMap = {
   references: ReferencesIcon,
   trash: Trash,
   fork: GitFork,
-  more: MoreHorizontal
+  more: MoreHorizontal,
+  stop: Square
 }

@@ -41,6 +41,7 @@ export const messages = {
     'chat.add_attachments': '添加附件',
     'chat.remove_attachment': '移除附件',
     'chat.send': '发送',
+    'chat.stop': '停止',
     'chat.submit_error': '发送失败：',
     'chat.streaming_error_title': '流式输出出错。',
     'chat.streaming_error_retry': '请刷新页面或稍后再试。',
@@ -143,6 +144,7 @@ export const messages = {
     'chat.add_attachments': 'Add attachments',
     'chat.remove_attachment': 'Remove attachment',
     'chat.send': 'Send',
+    'chat.stop': 'Stop',
     'chat.submit_error': 'Error in handleSubmit: ',
     'chat.streaming_error_title':
       'Oops! Something went wrong while streaming.',

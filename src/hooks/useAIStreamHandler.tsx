@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react'
+import { useCallback } from 'react'
 
 import { APIRoutes } from '@/api/routes'
 
@@ -13,6 +13,10 @@ import { constructEndpointUrl } from '@/lib/constructEndpointUrl'
 import useAIResponseStream from './useAIResponseStream'
 import { ToolCall } from '@/types/os'
 import { useQueryState } from 'nuqs'
+
+// Shared across ChatInput / Sessions so stop and session switches hit the same run.
+const abortControllerRef: { current: AbortController | null } = { current: null }
+const activeRunIdRef: { current: string | null } = { current: null }
 
 const useAIChatStreamHandler = () => {
   const setMessages = useStore((state) => state.setMessages)
@@ -29,11 +33,36 @@ const useAIChatStreamHandler = () => {
   const setIsStreaming = useStore((state) => state.setIsStreaming)
   const setSessionsData = useStore((state) => state.setSessionsData)
   const { streamResponse } = useAIResponseStream()
-  const abortControllerRef = useRef<AbortController | null>(null)
 
   const stopStreaming = useCallback(() => {
     abortControllerRef.current?.abort()
   }, [])
+
+  const cancelActiveRun = useCallback(() => {
+    const runId = activeRunIdRef.current
+    abortControllerRef.current?.abort()
+
+    if (!runId || !(agentId || teamId)) return
+
+    const endpointUrl = constructEndpointUrl(selectedEndpoint)
+    const cancelUrl =
+      mode === 'team' && teamId
+        ? APIRoutes.TeamRunCancel(endpointUrl, teamId, runId)
+        : agentId
+          ? APIRoutes.AgentRunCancel(endpointUrl, agentId, runId)
+          : null
+    if (!cancelUrl) return
+
+    const headers: Record<string, string> = {}
+    if (authToken) {
+      headers.Authorization = `Bearer ${authToken}`
+    }
+    const url = new URL(cancelUrl)
+    if (sessionId) {
+      url.searchParams.set('session_id', sessionId)
+    }
+    void fetch(url.toString(), { method: 'POST', headers }).catch(() => {})
+  }, [agentId, teamId, mode, selectedEndpoint, authToken, sessionId])
 
   const scheduleWorkingStatus = useCallback(
     (expectedToken?: number) => {
@@ -140,6 +169,7 @@ const useAIChatStreamHandler = () => {
       abortControllerRef.current?.abort()
       const controller = new AbortController()
       abortControllerRef.current = controller
+      activeRunIdRef.current = null
       setIsStreaming(true)
 
       const formData = input instanceof FormData ? input : new FormData()
@@ -253,8 +283,23 @@ const useAIChatStreamHandler = () => {
           requestBody: formData,
           signal: controller.signal,
           onDisconnected: buildResumeRequest,
-          onCancelled: () => {},
+          onCancelled: () => {
+            setMessages((prevMessages) => {
+              const newMessages = [...prevMessages]
+              const lastMessage = newMessages[newMessages.length - 1]
+              if (lastMessage && lastMessage.role === 'agent') {
+                lastMessage.extra_data = {
+                  ...lastMessage.extra_data,
+                  streaming_status: undefined
+                }
+              }
+              return newMessages
+            })
+          },
           onChunk: (chunk: RunResponse) => {
+            if (typeof chunk.run_id === 'string' && chunk.run_id) {
+              activeRunIdRef.current = chunk.run_id
+            }
             if (
               chunk.event === RunEvent.RunStarted ||
               chunk.event === RunEvent.TeamRunStarted ||
@@ -550,6 +595,7 @@ const useAIChatStreamHandler = () => {
         if (abortControllerRef.current === controller) {
           abortControllerRef.current = null
         }
+        activeRunIdRef.current = null
         focusChatInput()
         setIsStreaming(false)
       }
@@ -594,6 +640,7 @@ const useAIChatStreamHandler = () => {
       abortControllerRef.current?.abort()
       const controller = new AbortController()
       abortControllerRef.current = controller
+      activeRunIdRef.current = runId
       setIsStreaming(true)
       setStreamingErrorMessage('')
 
@@ -689,8 +736,23 @@ const useAIChatStreamHandler = () => {
           requestBody: initialBody,
           signal: controller.signal,
           onDisconnected: buildResumeRequest,
-          onCancelled: () => {},
+          onCancelled: () => {
+            setMessages((prevMessages) => {
+              const newMessages = [...prevMessages]
+              const lastMessage = newMessages[newMessages.length - 1]
+              if (lastMessage && lastMessage.role === 'agent') {
+                lastMessage.extra_data = {
+                  ...lastMessage.extra_data,
+                  streaming_status: undefined
+                }
+              }
+              return newMessages
+            })
+          },
           onChunk: (chunk: RunResponse) => {
+            if (typeof chunk.run_id === 'string' && chunk.run_id) {
+              activeRunIdRef.current = chunk.run_id
+            }
             if (
               chunk.event === RunEvent.RunStarted ||
               chunk.event === RunEvent.TeamRunStarted ||
@@ -864,6 +926,7 @@ const useAIChatStreamHandler = () => {
         if (abortControllerRef.current === controller) {
           abortControllerRef.current = null
         }
+        activeRunIdRef.current = null
         setIsStreaming(false)
       }
     },
@@ -884,7 +947,12 @@ const useAIChatStreamHandler = () => {
     ]
   )
 
-  return { handleStreamResponse, attachToBackgroundRun, stopStreaming }
+  return {
+    handleStreamResponse,
+    attachToBackgroundRun,
+    stopStreaming,
+    cancelActiveRun
+  }
 }
 
 export default useAIChatStreamHandler

@@ -40,7 +40,7 @@ const ChatInput = () => {
   const { t } = useLocale()
   const { chatInputRef } = useStore()
 
-  const { handleStreamResponse } = useAIChatStreamHandler()
+  const { handleStreamResponse, cancelActiveRun } = useAIChatStreamHandler()
   const [selectedAgent] = useQueryState('agent')
   const [teamId] = useQueryState('team')
   const [inputMessage, setInputMessage] = useState('')
@@ -345,29 +345,53 @@ const ChatInput = () => {
             />
           </div>
 
-          {/* 右侧：发送按钮（深色圆形） */}
-          <button
-            type="button"
-            onClick={handleSubmit}
-            disabled={!canSend}
-            aria-label={t('chat.send')}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: '40px',
-              height: '40px',
-              borderRadius: '50%',
-              border: 'none',
-              backgroundColor: canSend ? '#111827' : '#d1d5db',
-              cursor: canSend ? 'pointer' : 'not-allowed',
-              flexShrink: 0,
-              padding: 0,
-              transition: 'background-color 0.15s',
-            }}
-          >
-            <Icon type="send" color="white" />
-          </button>
+          {/* 右侧：运行中显示停止，否则显示发送 */}
+          {isStreaming ? (
+            <button
+              type="button"
+              onClick={cancelActiveRun}
+              aria-label={t('chat.stop')}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: '40px',
+                height: '40px',
+                borderRadius: '50%',
+                border: 'none',
+                backgroundColor: '#111827',
+                cursor: 'pointer',
+                flexShrink: 0,
+                padding: 0,
+                transition: 'background-color 0.15s',
+              }}
+            >
+              <Icon type="stop" size="xs" color="white" className="fill-white" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={!canSend}
+              aria-label={t('chat.send')}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: '40px',
+                height: '40px',
+                borderRadius: '50%',
+                border: 'none',
+                backgroundColor: canSend ? '#111827' : '#d1d5db',
+                cursor: canSend ? 'pointer' : 'not-allowed',
+                flexShrink: 0,
+                padding: 0,
+                transition: 'background-color 0.15s',
+              }}
+            >
+              <Icon type="send" color="white" />
+            </button>
+          )}
         </div>
       </div>
     </div>

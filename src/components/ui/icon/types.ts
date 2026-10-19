@@ -38,6 +38,7 @@ export type IconType =
   | 'trash'
   | 'fork'
   | 'more'
+  | 'stop'
 
 export interface IconProps {
   type: IconType
